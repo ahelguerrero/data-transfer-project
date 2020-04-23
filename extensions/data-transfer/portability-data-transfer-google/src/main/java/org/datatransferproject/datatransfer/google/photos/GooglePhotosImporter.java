@@ -34,6 +34,8 @@ import org.datatransferproject.spi.cloud.storage.TemporaryPerJobDataStore.InputS
 import org.datatransferproject.spi.transfer.idempotentexecutor.IdempotentImportExecutor;
 import org.datatransferproject.spi.transfer.provider.ImportResult;
 import org.datatransferproject.spi.transfer.provider.Importer;
+import org.datatransferproject.spi.transfer.types.DestinationMemoryFullException;
+import org.datatransferproject.spi.transfer.types.InvalidTokenException;
 import org.datatransferproject.transfer.ImageStreamProvider;
 import org.datatransferproject.types.common.models.photos.PhotoAlbum;
 import org.datatransferproject.types.common.models.photos.PhotoModel;
@@ -52,13 +54,22 @@ public class GooglePhotosImporter
   private final ImageStreamProvider imageStreamProvider;
   private volatile GooglePhotosInterface photosInterface;
   private final Monitor monitor;
+  private final double writesPerSecond;
 
   public GooglePhotosImporter(
       GoogleCredentialFactory credentialFactory,
       TemporaryPerJobDataStore jobStore,
       JsonFactory jsonFactory,
-      Monitor monitor) {
-    this(credentialFactory, jobStore, jsonFactory, null, new ImageStreamProvider(), monitor);
+      Monitor monitor,
+      double writesPerSecond) {
+    this(
+        credentialFactory,
+        jobStore,
+        jsonFactory,
+        null,
+        new ImageStreamProvider(),
+        monitor,
+        writesPerSecond);
   }
 
   @VisibleForTesting
@@ -68,13 +79,15 @@ public class GooglePhotosImporter
       JsonFactory jsonFactory,
       GooglePhotosInterface photosInterface,
       ImageStreamProvider imageStreamProvider,
-      Monitor monitor) {
+      Monitor monitor,
+      double writesPerSecond) {
     this.credentialFactory = credentialFactory;
     this.jobStore = jobStore;
     this.jsonFactory = jsonFactory;
     this.photosInterface = photosInterface;
     this.imageStreamProvider = imageStreamProvider;
     this.monitor = monitor;
+    this.writesPerSecond = writesPerSecond;
   }
 
   @Override
@@ -118,7 +131,7 @@ public class GooglePhotosImporter
 
   @VisibleForTesting
   String importSingleAlbum(TokensAndUrlAuthData authData, PhotoAlbum inputAlbum)
-      throws IOException {
+      throws IOException, InvalidTokenException {
     // Set up album
     GoogleAlbum googleAlbum = new GoogleAlbum();
     String title = COPY_PREFIX + inputAlbum.getName();
@@ -139,7 +152,7 @@ public class GooglePhotosImporter
       TokensAndUrlAuthData authData,
       PhotoModel inputPhoto,
       IdempotentImportExecutor idempotentImportExecutor)
-      throws IOException {
+      throws IOException, DestinationMemoryFullException, InvalidTokenException {
     /*
     TODO: resumable uploads https://developers.google.com/photos/library/guides/resumable-uploads
     Resumable uploads would allow the upload of larger media that don't fit in memory.  To do this,
@@ -178,14 +191,22 @@ public class GooglePhotosImporter
 
     NewMediaItemUpload uploadItem =
         new NewMediaItemUpload(albumId, Collections.singletonList(newMediaItem));
-
-    return new PhotoResult(
-        getOrCreatePhotosInterface(authData)
-            .createPhoto(uploadItem)
-            .getResults()[0]
-            .getMediaItem()
-            .getId(),
-        bytes);
+    try {
+      return new PhotoResult(
+          getOrCreatePhotosInterface(authData)
+              .createPhoto(uploadItem)
+              .getResults()[0]
+              .getMediaItem()
+              .getId(),
+          bytes);
+    } catch (IOException e) {
+      if (e.getMessage() != null
+          && e.getMessage().contains("The remaining storage in the user's account is not enough")) {
+        throw new DestinationMemoryFullException("Google destination storage full", e);
+      } else {
+        throw e;
+      }
+    }
   }
 
   private String getPhotoDescription(PhotoModel inputPhoto) {
@@ -210,6 +231,7 @@ public class GooglePhotosImporter
 
   private synchronized GooglePhotosInterface makePhotosInterface(TokensAndUrlAuthData authData) {
     Credential credential = credentialFactory.createCredential(authData);
-    return new GooglePhotosInterface(credentialFactory, credential, jsonFactory, monitor);
+    return new GooglePhotosInterface(
+        credentialFactory, credential, jsonFactory, monitor, writesPerSecond);
   }
 }

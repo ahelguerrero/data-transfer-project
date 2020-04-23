@@ -15,6 +15,7 @@
  */
 package org.datatransferproject.transfer.smugmug.photos.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.base.MoreObjects;
 
@@ -26,24 +27,34 @@ public final class SmugMugImageUploadResponse {
   @JsonProperty("method")
   private String method;
 
-  @JsonProperty("image")
+  @JsonProperty("Image")
   private ImageInfo image;
 
-  @JsonProperty("code")
-  private String code;
-
-  @JsonProperty("message")
-  private String message;
+  @JsonCreator
+  public SmugMugImageUploadResponse(
+      @JsonProperty("stat") String stat,
+      @JsonProperty("method") String method,
+      @JsonProperty("Image") ImageInfo image) {
+    this.stat = stat;
+    this.method = method;
+    this.image = image;
+  }
 
   @Override
   public String toString() {
     return MoreObjects.toStringHelper(this)
         .add("stat", stat)
         .add("method", method)
-        .add("image", image)
-        .add("code", code)
-        .add("message", message)
+        .add("Image", image)
         .toString();
+  }
+
+  public ImageInfo getImageInfo() {
+    return image;
+  }
+
+  public String getStat() {
+    return stat;
   }
 
   public static class ImageInfo {
@@ -60,6 +71,18 @@ public final class SmugMugImageUploadResponse {
     @JsonProperty("URL")
     private String url;
 
+    @JsonCreator
+    public ImageInfo(
+        @JsonProperty("ImageUri") String imageUri,
+        @JsonProperty("AlbumImageUri") String albumImageUri,
+        @JsonProperty("StatusImageReplaceUri") String statusImageReplaceUri,
+        @JsonProperty("URL") String url) {
+      this.imageUri = imageUri;
+      this.albumImageUri = albumImageUri;
+      this.statusImageReplaceUri = statusImageReplaceUri;
+      this.url = url;
+    }
+
     @Override
     public String toString() {
       return MoreObjects.toStringHelper(this)
@@ -70,5 +93,4 @@ public final class SmugMugImageUploadResponse {
           .toString();
     }
   }
-
 }

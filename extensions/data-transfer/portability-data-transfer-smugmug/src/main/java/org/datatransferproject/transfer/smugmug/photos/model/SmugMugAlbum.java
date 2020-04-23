@@ -15,43 +15,62 @@
  */
 package org.datatransferproject.transfer.smugmug.photos.model;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import java.util.Map;
+import com.fasterxml.jackson.annotation.JsonTypeName;
 
+@JsonTypeName("org.dataportability:SmugMugAlbum")
 public class SmugMugAlbum {
+  private final String date;
+  private final String description;
+  private final String name;
+  private final String privacy;
+  private final String uri;
+  private final String urlName;
+  private final String webUri;
 
-  @JsonProperty("Date")
-  private String date;
+  public SmugMugAlbum(
+    @JsonProperty("Date") String date, 
+    @JsonProperty("Description") String description, 
+    @JsonProperty("Name") String name, 
+    @JsonProperty("Privacy") String privacy, 
+    @JsonProperty("Uri") String uri, 
+    @JsonProperty("UrlName") String urlName, 
+    @JsonProperty("WebUri") String webUri) {
+    this.date = date;
+    this.description = description;
+    this.name = name;
+    this.privacy = privacy;
+    this.uri = uri;
+    this.urlName = urlName;
+    this.webUri = webUri;
+  }
 
-  @JsonProperty("Description")
-  private String description;
+  public String getDate() {
+    return date;
+  }
 
-  @JsonProperty("Name")
-  private String name;
+  public String getDescription() {
+    return description;
+  }
 
-  @JsonProperty("Privacy")
-  private String privacy;
+  public String getName() {
+    return name;
+  }
 
-  @JsonProperty("Uri")
-  private String uri;
+  public String getPrivacy() {
+    return privacy;
+  }
 
-  @JsonProperty("UrlName")
-  private String urlName;
+  public String getUri() {
+    return uri;
+  }
 
-  @JsonProperty("WebUri")
-  private String webUri;
+  public String getUrlName() {
+    return urlName;
+  }
 
-  public String getDate() { return date; }
-
-  public String getDescription() { return description; }
-
-  public String getName() { return name; }
-
-  public String getPrivacy() { return privacy; }
-
-  public String getUri() { return uri; }
-
-  public String getUrlName() { return urlName; }
-
-  public String getWebUri() { return webUri; }
+  public String getWebUri() {
+    return webUri;
+  }
 }

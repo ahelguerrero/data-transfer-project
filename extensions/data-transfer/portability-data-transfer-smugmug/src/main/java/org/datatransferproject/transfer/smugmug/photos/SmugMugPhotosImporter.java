@@ -19,9 +19,7 @@ package org.datatransferproject.transfer.smugmug.photos;
 import static com.google.common.base.Preconditions.checkState;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.api.client.http.HttpTransport;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.base.Strings;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.UUID;
@@ -44,34 +42,31 @@ public class SmugMugPhotosImporter
 
   private final TemporaryPerJobDataStore jobStore;
   private final AppCredentials appCredentials;
-  private final HttpTransport transport;
   private final ObjectMapper mapper;
   private final Monitor monitor;
-  private final SmugMugTransmogrificationConfig transmogrificationConfig =
-      new SmugMugTransmogrificationConfig();;
+  private final SmugMugTransmogrificationConfig transmogrificationConfig;
 
-  private SmugMugInterface smugMugInterface;
+  private final SmugMugInterface smugMugInterface;
 
   public SmugMugPhotosImporter(
       TemporaryPerJobDataStore jobStore,
-      HttpTransport transport,
       AppCredentials appCredentials,
       ObjectMapper mapper,
       Monitor monitor) {
-    this(null, jobStore, transport, appCredentials, mapper, monitor);
+    this(null, new SmugMugTransmogrificationConfig(), jobStore, appCredentials, mapper, monitor);
   }
 
   @VisibleForTesting
   SmugMugPhotosImporter(
       SmugMugInterface smugMugInterface,
+      SmugMugTransmogrificationConfig transmogrificationConfig,
       TemporaryPerJobDataStore jobStore,
-      HttpTransport transport,
       AppCredentials appCredentials,
       ObjectMapper mapper,
       Monitor monitor) {
     this.smugMugInterface = smugMugInterface;
+    this.transmogrificationConfig = transmogrificationConfig;
     this.jobStore = jobStore;
-    this.transport = transport;
     this.appCredentials = appCredentials;
     this.mapper = mapper;
     this.monitor = monitor;
@@ -92,7 +87,9 @@ public class SmugMugPhotosImporter
       SmugMugInterface smugMugInterface = getOrCreateSmugMugInterface(authData);
       for (PhotoAlbum album : data.getAlbums()) {
         idempotentExecutor.executeAndSwallowIOExceptions(
-            album.getId(), album.getName(), () -> importSingleAlbum(album, smugMugInterface));
+            album.getId(),
+            album.getName(),
+            () -> importSingleAlbum(jobId, album, smugMugInterface));
       }
       for (PhotoModel photo : data.getPhotos()) {
         idempotentExecutor.executeAndSwallowIOExceptions(
@@ -108,10 +105,17 @@ public class SmugMugPhotosImporter
   }
 
   @VisibleForTesting
-  String importSingleAlbum(PhotoAlbum inputAlbum, SmugMugInterface smugMugInterface)
+  String importSingleAlbum(UUID jobId, PhotoAlbum inputAlbum, SmugMugInterface smugMugInterface)
       throws IOException {
-    SmugMugAlbumResponse response = smugMugInterface.createAlbum(inputAlbum.getName());
-    return response.getUri();
+    SmugMugAlbumResponse albumResponse = smugMugInterface.createAlbum(inputAlbum.getName());
+    SmugMugPhotoTempData tempData =
+        new SmugMugPhotoTempData(
+            inputAlbum.getId(),
+            inputAlbum.getName(),
+            inputAlbum.getDescription(),
+            albumResponse.getUri());
+    jobStore.create(jobId, getTempDataId(inputAlbum.getId()), tempData);
+    return albumResponse.getUri();
   }
 
   @VisibleForTesting
@@ -121,20 +125,22 @@ public class SmugMugPhotosImporter
       PhotoModel inputPhoto,
       SmugMugInterface smugMugInterface)
       throws Exception {
-    String albumUri = idempotentExecutor.getCachedValue(inputPhoto.getAlbumId());
-    checkState(
-        !Strings.isNullOrEmpty(albumUri),
-        "Cached album URI for %s is null",
-        inputPhoto.getAlbumId());
-
     InputStream inputStream;
     if (inputPhoto.isInTempStore()) {
       inputStream = jobStore.getStream(jobId, inputPhoto.getFetchableUrl()).getStream();
     } else {
       inputStream = smugMugInterface.getImageAsStream(inputPhoto.getFetchableUrl());
     }
+
+    String originalAlbumId = inputPhoto.getAlbumId();
+    SmugMugPhotoTempData albumTempData =
+        getDestinationAlbumTempData(jobId, idempotentExecutor, originalAlbumId, smugMugInterface);
+
     SmugMugImageUploadResponse response =
-        smugMugInterface.uploadImage(inputPhoto, albumUri, inputStream);
+        smugMugInterface.uploadImage(inputPhoto, albumTempData.getAlbumUri(), inputStream);
+    albumTempData.incrementPhotoCount();
+    jobStore.update(jobId, getTempDataId(albumTempData.getAlbumExportId()), albumTempData);
+
     return response.toString();
   }
 
@@ -142,17 +148,75 @@ public class SmugMugPhotosImporter
   private SmugMugInterface getOrCreateSmugMugInterface(TokenSecretAuthData authData)
       throws IOException {
     return smugMugInterface == null
-        ? new SmugMugInterface(transport, appCredentials, authData, mapper)
+        ? new SmugMugInterface(appCredentials, authData, mapper)
         : smugMugInterface;
   }
 
   /**
-   * Key for cache of album mappings. TODO: Add a method parameter for a {@code key} for fine
-   * grained objects.
+   * Get the proper album upload information for the photo. Takes into account size limits of the
+   * albums and completed uploads.
    */
-  private String createCacheKey() {
-    // TODO: store objects containing individual mappings instead of single object containing all
-    // mappings
-    return "tempPhotosData";
+  @VisibleForTesting
+  SmugMugPhotoTempData getDestinationAlbumTempData(
+      UUID jobId,
+      IdempotentImportExecutor idempotentExecutor,
+      String baseAlbumId,
+      SmugMugInterface smugMugInterface)
+      throws Exception {
+    SmugMugPhotoTempData baseAlbumTempData =
+        jobStore.findData(jobId, getTempDataId(baseAlbumId), SmugMugPhotoTempData.class);
+    SmugMugPhotoTempData albumTempData = baseAlbumTempData;
+    int depth = 0;
+    while (albumTempData.getPhotoCount() >= transmogrificationConfig.getAlbumMaxSize()) {
+      if (albumTempData.getOverflowAlbumExportId() == null) {
+        PhotoAlbum newAlbum =
+            createOverflowAlbum(
+                baseAlbumTempData.getAlbumExportId(),
+                baseAlbumTempData.getAlbumName(),
+                baseAlbumTempData.getAlbumDescription(),
+                depth + 1);
+        // since the album is full and has no overflow, we need to create a new one
+        String newUri =
+            idempotentExecutor.executeOrThrowException(
+                newAlbum.getId(),
+                newAlbum.getName(),
+                () -> importSingleAlbum(jobId, newAlbum, smugMugInterface));
+        albumTempData.setOverflowAlbumExportId(newAlbum.getId());
+        jobStore.update(jobId, getTempDataId(albumTempData.getAlbumExportId()), albumTempData);
+        albumTempData =
+            jobStore.findData(
+                jobId,
+                getTempDataId(albumTempData.getOverflowAlbumExportId()),
+                SmugMugPhotoTempData.class);
+      } else {
+        albumTempData =
+            jobStore.findData(
+                jobId,
+                getTempDataId(albumTempData.getOverflowAlbumExportId()),
+                SmugMugPhotoTempData.class);
+      }
+      depth += 1;
+    }
+    return albumTempData;
+  }
+
+  private static String getTempDataId(String albumId) {
+    return String.format("smugmug-album-temp-data-%s", albumId);
+  }
+
+  /**
+   * Create an overflow album using the base album's id, name, and description and the overflow
+   * album's opy number. E.g. if baseAlbum needs a single overflow album, it will be created with
+   * createOverflowAlbum("baseAlbumId", "baseAlbumName", "baseAlbumDescription", 1) and result in an
+   * album PhotoAlbum("baseAlbumId-overflow-1", "baseAlbumName (1)", "baseAlbumDescription")
+   */
+  private static PhotoAlbum createOverflowAlbum(
+      String baseAlbumId, String baseAlbumName, String baseAlbumDescription, int copyNumber)
+      throws Exception {
+    checkState(copyNumber > 0, "copyNumber should be > 0");
+    return new PhotoAlbum(
+        String.format("%s-overflow-%d", baseAlbumId, copyNumber),
+        String.format("%s (%d)", baseAlbumName, copyNumber),
+        baseAlbumDescription);
   }
 }

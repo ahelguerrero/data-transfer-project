@@ -19,30 +19,12 @@ package org.datatransferproject.transfer.smugmug.photos;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.google.api.client.http.HttpContent;
-import com.google.api.client.http.HttpTransport;
 import com.google.api.client.http.InputStreamContent;
-import com.google.api.client.http.json.JsonHttpContent;
-import com.google.api.client.json.jackson2.JacksonFactory;
 import com.google.common.base.Preconditions;
 import com.google.common.base.Strings;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.net.HttpHeaders;
-import java.io.ByteArrayOutputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Map.Entry;
-import java.util.stream.Collectors;
-import javax.annotation.Nullable;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugAlbumImageResponse;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugAlbumResponse;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugAlbumsResponse;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugImageUploadResponse;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugResponse;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugUser;
-import org.datatransferproject.transfer.smugmug.photos.model.SmugMugUserResponse;
+import org.datatransferproject.transfer.smugmug.photos.model.*;
 import org.datatransferproject.types.common.models.photos.PhotoModel;
 import org.datatransferproject.types.transfer.auth.AppCredentials;
 import org.datatransferproject.types.transfer.auth.TokenSecretAuthData;
@@ -53,6 +35,15 @@ import org.scribe.model.Token;
 import org.scribe.model.Verb;
 import org.scribe.oauth.OAuthService;
 
+import javax.annotation.Nullable;
+import java.io.ByteArrayOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.stream.Collectors;
+
 public class SmugMugInterface {
 
   private static final String BASE_URL = "https://api.smugmug.com";
@@ -61,18 +52,12 @@ public class SmugMugInterface {
   private static final String FOLDER_KEY = "Folder";
 
   private final OAuthService oAuthService;
-  private final HttpTransport httpTransport;
   private final Token accessToken;
   private final ObjectMapper mapper;
   private final SmugMugUser user;
 
-  SmugMugInterface(
-      HttpTransport transport,
-      AppCredentials appCredentials,
-      TokenSecretAuthData authData,
-      ObjectMapper mapper)
+  SmugMugInterface(AppCredentials appCredentials, TokenSecretAuthData authData, ObjectMapper mapper)
       throws IOException {
-    this.httpTransport = transport;
     this.oAuthService =
         new ServiceBuilder()
             .apiKey(appCredentials.getKey())
@@ -87,10 +72,9 @@ public class SmugMugInterface {
   SmugMugAlbumImageResponse getListOfAlbumImages(String url) throws IOException {
     Preconditions.checkArgument(
         !Strings.isNullOrEmpty(url), "Album URI is required to retrieve album information");
-    SmugMugAlbumImageResponse response = makeRequest(url,
-        new TypeReference<SmugMugResponse<SmugMugAlbumImageResponse>>() {
-        })
-        .getResponse();
+    SmugMugAlbumImageResponse response =
+        makeRequest(url, new TypeReference<SmugMugResponse<SmugMugAlbumImageResponse>>() {})
+            .getResponse();
     return response;
   }
 
@@ -100,8 +84,7 @@ public class SmugMugInterface {
     if (Strings.isNullOrEmpty(url)) {
       url = user.getUris().get(ALBUMS_KEY).getUri();
     }
-    return makeRequest(url, new TypeReference<SmugMugResponse<SmugMugAlbumsResponse>>() {
-    })
+    return makeRequest(url, new TypeReference<SmugMugResponse<SmugMugAlbumsResponse>>() {})
         .getResponse();
   }
 
@@ -116,7 +99,6 @@ public class SmugMugInterface {
     json.put("Title", "Copy of " + albumName);
     // All imported content is private by default.
     json.put("Privacy", "Private");
-    HttpContent content = new JsonHttpContent(new JacksonFactory(), json);
 
     // Upload album
     String folder = user.getUris().get(FOLDER_KEY).getUri();
@@ -137,8 +119,8 @@ public class SmugMugInterface {
 
   /* Uploads the resource at photoUrl to the albumId provided
    * The albumId must exist before calling upload, else the request will fail */
-  SmugMugImageUploadResponse uploadImage(PhotoModel photoModel, String albumUri, InputStream inputStream)
-      throws IOException {
+  SmugMugImageUploadResponse uploadImage(
+      PhotoModel photoModel, String albumUri, InputStream inputStream) throws IOException {
     // Set up photo
     InputStreamContent content = new InputStreamContent(null, inputStream);
     ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
@@ -160,18 +142,20 @@ public class SmugMugInterface {
     }
 
     // Upload photo
-    return postRequest(
-        "https://upload.smugmug.com/",
-        ImmutableMap.of(), // No content params for photo upload
-        contentBytes,
-        headersMap,
-        new TypeReference<SmugMugImageUploadResponse>() {
-        });
+    SmugMugImageUploadResponse response =
+        postRequest(
+            "https://upload.smugmug.com/",
+            ImmutableMap.of(), // No content params for photo upload
+            contentBytes,
+            headersMap,
+            new TypeReference<SmugMugImageUploadResponse>() {});
+
+    Preconditions.checkState(response.getStat().equals("ok"), "Failed to upload image");
+    return Preconditions.checkNotNull(response, "Image upload Response is null");
   }
 
   private SmugMugUserResponse getUserInformation() throws IOException {
-    return makeRequest(USER_URL, new TypeReference<SmugMugResponse<SmugMugUserResponse>>() {
-    })
+    return makeRequest(USER_URL, new TypeReference<SmugMugResponse<SmugMugUserResponse>>() {})
         .getResponse();
   }
 
@@ -192,8 +176,7 @@ public class SmugMugInterface {
     } else {
       fullUrl = url;
     }
-    OAuthRequest request =
-        new OAuthRequest(Verb.GET, fullUrl + "?_accept=application%2Fjson");
+    OAuthRequest request = new OAuthRequest(Verb.GET, fullUrl + "?_accept=application%2Fjson");
     oAuthService.signRequest(accessToken, request);
     final Response response = request.send();
 
@@ -202,8 +185,7 @@ public class SmugMugInterface {
           String.format("Error occurred in request for %s : %s", url, response.getMessage()));
     }
 
-    String result = response.getBody();
-    return mapper.readValue(result, typeReference);
+    return mapper.readValue(response.getBody(), typeReference);
   }
 
   // Makes a post request with the content parameters provided as the body, or the httpcontent as
@@ -250,27 +232,28 @@ public class SmugMugInterface {
             String.format(
                 "Error occurred in request for %s, code: %s, message: %s, request: %s, bodyParams: %s, payload: %s",
                 fullUrl,
-                response.getCode(), response.getMessage(), request.toString(),
-                request.getBodyParams(), request.getBodyContents()));
+                response.getCode(),
+                response.getMessage(),
+                request,
+                request.getBodyParams(),
+                request.getBodyContents()));
       }
       throw new IOException(
-          String.format("Error occurred in request for %s, code: %s, message: %s", fullUrl,
-              response.getCode(), response.getMessage()));
+          String.format(
+              "Error occurred in request for %s, code: %s, message: %s",
+              fullUrl, response.getCode(), response.getMessage()));
     }
-
     return mapper.readValue(response.getBody(), typeReference);
   }
 
   static String cleanName(String name) {
-      // TODO:  Handle cases where the entire album name is non-alphanumeric, e.g. all emojis
-      return new String(
-        name.chars()
-          .mapToObj(c -> (char)c)
-          .map(c -> Character.isWhitespace(c) ? '-' : c)
-          .filter(c -> Character.isLetterOrDigit(c) || c == '-')
-          .limit(40)
-          .map(Object::toString)
-          .collect(Collectors.joining(""))
-      );
+    // TODO:  Handle cases where the entire album name is non-alphanumeric, e.g. all emojis
+    return name.chars()
+        .mapToObj(c -> (char) c)
+        .map(c -> Character.isWhitespace(c) ? '-' : c)
+        .filter(c -> Character.isLetterOrDigit(c) || c == '-')
+        .limit(40)
+        .map(Object::toString)
+        .collect(Collectors.joining(""));
   }
 }
