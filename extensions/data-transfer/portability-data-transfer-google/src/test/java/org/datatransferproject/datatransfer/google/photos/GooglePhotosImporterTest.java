@@ -37,6 +37,7 @@ import org.datatransferproject.datatransfer.google.mediaModels.NewMediaItemUploa
 import org.datatransferproject.spi.cloud.storage.TemporaryPerJobDataStore;
 import org.datatransferproject.spi.transfer.idempotentexecutor.IdempotentImportExecutor;
 import org.datatransferproject.spi.transfer.types.InvalidTokenException;
+import org.datatransferproject.spi.transfer.types.PermissionDeniedException;
 import org.datatransferproject.test.types.FakeIdempotentImportExecutor;
 import org.datatransferproject.transfer.ImageStreamProvider;
 import org.datatransferproject.types.common.models.photos.PhotoAlbum;
@@ -48,14 +49,14 @@ import org.mockito.Mockito;
 
 public class GooglePhotosImporterTest {
 
+  private static final String OLD_ALBUM_ID = "OLD_ALBUM_ID";
+  private static final String NEW_ALBUM_ID = "NEW_ALBUM_ID";
   private String PHOTO_TITLE = "Model photo title";
   private String PHOTO_DESCRIPTION = "Model photo description";
   private String IMG_URI = "image uri";
   private String JPEG_MEDIA_TYPE = "image/jpeg";
   private String UPLOAD_TOKEN = "uploadToken";
-
   private UUID uuid = UUID.randomUUID();
-
   private GooglePhotosImporter googlePhotosImporter;
   private GooglePhotosInterface googlePhotosInterface;
   private TemporaryPerJobDataStore jobStore;
@@ -64,11 +65,8 @@ public class GooglePhotosImporterTest {
   private IdempotentImportExecutor executor;
   private Monitor monitor;
 
-  private static final String OLD_ALBUM_ID = "OLD_ALBUM_ID";
-  private static final String NEW_ALBUM_ID = "NEW_ALBUM_ID";
-
   @Before
-  public void setUp() throws IOException, InvalidTokenException {
+  public void setUp() throws IOException, InvalidTokenException, PermissionDeniedException {
     executor = new FakeIdempotentImportExecutor();
     googlePhotosInterface = Mockito.mock(GooglePhotosInterface.class);
     monitor = Mockito.mock(Monitor.class);
@@ -90,7 +88,7 @@ public class GooglePhotosImporterTest {
 
     googlePhotosImporter =
         new GooglePhotosImporter(
-            null, jobStore, null, googlePhotosInterface, imageStreamProvider, monitor, 1.0);
+            null, jobStore, null, null, googlePhotosInterface, imageStreamProvider, monitor, 1.0);
   }
 
   @Test
@@ -106,7 +104,7 @@ public class GooglePhotosImporterTest {
         .thenReturn(responseAlbum);
 
     // Run test
-    googlePhotosImporter.importSingleAlbum(null, albumModel);
+    googlePhotosImporter.importSingleAlbum(uuid, null, albumModel);
 
     // Check results
     ArgumentCaptor<GoogleAlbum> albumArgumentCaptor = ArgumentCaptor.forClass(GoogleAlbum.class);

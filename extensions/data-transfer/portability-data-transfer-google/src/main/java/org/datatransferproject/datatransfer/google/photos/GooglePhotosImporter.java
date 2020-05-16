@@ -23,6 +23,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 import org.datatransferproject.api.launcher.Monitor;
 import org.datatransferproject.datatransfer.google.common.GoogleCredentialFactory;
@@ -34,8 +36,10 @@ import org.datatransferproject.spi.cloud.storage.TemporaryPerJobDataStore.InputS
 import org.datatransferproject.spi.transfer.idempotentexecutor.IdempotentImportExecutor;
 import org.datatransferproject.spi.transfer.provider.ImportResult;
 import org.datatransferproject.spi.transfer.provider.Importer;
+import org.datatransferproject.spi.transfer.types.CopyExceptionWithFailureReason;
 import org.datatransferproject.spi.transfer.types.DestinationMemoryFullException;
 import org.datatransferproject.spi.transfer.types.InvalidTokenException;
+import org.datatransferproject.spi.transfer.types.PermissionDeniedException;
 import org.datatransferproject.transfer.ImageStreamProvider;
 import org.datatransferproject.types.common.models.photos.PhotoAlbum;
 import org.datatransferproject.types.common.models.photos.PhotoModel;
@@ -52,9 +56,10 @@ public class GooglePhotosImporter
   private final TemporaryPerJobDataStore jobStore;
   private final JsonFactory jsonFactory;
   private final ImageStreamProvider imageStreamProvider;
-  private volatile GooglePhotosInterface photosInterface;
   private final Monitor monitor;
   private final double writesPerSecond;
+  private volatile Map<UUID, GooglePhotosInterface> photosInterfacesMap;
+  private volatile GooglePhotosInterface photosInterface;
 
   public GooglePhotosImporter(
       GoogleCredentialFactory credentialFactory,
@@ -66,6 +71,7 @@ public class GooglePhotosImporter
         credentialFactory,
         jobStore,
         jsonFactory,
+        new HashMap<>(),
         null,
         new ImageStreamProvider(),
         monitor,
@@ -77,6 +83,7 @@ public class GooglePhotosImporter
       GoogleCredentialFactory credentialFactory,
       TemporaryPerJobDataStore jobStore,
       JsonFactory jsonFactory,
+      Map<UUID, GooglePhotosInterface> photosInterfacesMap,
       GooglePhotosInterface photosInterface,
       ImageStreamProvider imageStreamProvider,
       Monitor monitor,
@@ -84,6 +91,7 @@ public class GooglePhotosImporter
     this.credentialFactory = credentialFactory;
     this.jobStore = jobStore;
     this.jsonFactory = jsonFactory;
+    this.photosInterfacesMap = photosInterfacesMap;
     this.photosInterface = photosInterface;
     this.imageStreamProvider = imageStreamProvider;
     this.monitor = monitor;
@@ -106,7 +114,7 @@ public class GooglePhotosImporter
     if (data.getAlbums() != null && data.getAlbums().size() > 0) {
       for (PhotoAlbum album : data.getAlbums()) {
         idempotentImportExecutor.executeAndSwallowIOExceptions(
-            album.getId(), album.getName(), () -> importSingleAlbum(authData, album));
+            album.getId(), album.getName(), () -> importSingleAlbum(jobId, authData, album));
       }
     }
 
@@ -130,8 +138,8 @@ public class GooglePhotosImporter
   }
 
   @VisibleForTesting
-  String importSingleAlbum(TokensAndUrlAuthData authData, PhotoAlbum inputAlbum)
-      throws IOException, InvalidTokenException {
+  String importSingleAlbum(UUID jobId, TokensAndUrlAuthData authData, PhotoAlbum inputAlbum)
+      throws IOException, InvalidTokenException, PermissionDeniedException {
     // Set up album
     GoogleAlbum googleAlbum = new GoogleAlbum();
     String title = COPY_PREFIX + inputAlbum.getName();
@@ -142,7 +150,8 @@ public class GooglePhotosImporter
     }
     googleAlbum.setTitle(title);
 
-    GoogleAlbum responseAlbum = getOrCreatePhotosInterface(authData).createAlbum(googleAlbum);
+    GoogleAlbum responseAlbum =
+        getOrCreatePhotosInterface(jobId, authData).createAlbum(googleAlbum);
     return responseAlbum.getId();
   }
 
@@ -152,7 +161,7 @@ public class GooglePhotosImporter
       TokensAndUrlAuthData authData,
       PhotoModel inputPhoto,
       IdempotentImportExecutor idempotentImportExecutor)
-      throws IOException, DestinationMemoryFullException, InvalidTokenException {
+      throws IOException, CopyExceptionWithFailureReason {
     /*
     TODO: resumable uploads https://developers.google.com/photos/library/guides/resumable-uploads
     Resumable uploads would allow the upload of larger media that don't fit in memory.  To do this,
@@ -173,7 +182,8 @@ public class GooglePhotosImporter
       inputStream = conn.getInputStream();
     }
 
-    String uploadToken = getOrCreatePhotosInterface(authData).uploadPhotoContent(inputStream);
+    String uploadToken =
+        getOrCreatePhotosInterface(jobId, authData).uploadPhotoContent(inputStream);
 
     String description = getPhotoDescription(inputPhoto);
     NewMediaItem newMediaItem = new NewMediaItem(description, uploadToken);
@@ -193,7 +203,7 @@ public class GooglePhotosImporter
         new NewMediaItemUpload(albumId, Collections.singletonList(newMediaItem));
     try {
       return new PhotoResult(
-          getOrCreatePhotosInterface(authData)
+          getOrCreatePhotosInterface(jobId, authData)
               .createPhoto(uploadItem)
               .getResults()[0]
               .getMediaItem()
@@ -225,8 +235,20 @@ public class GooglePhotosImporter
   }
 
   private synchronized GooglePhotosInterface getOrCreatePhotosInterface(
-      TokensAndUrlAuthData authData) {
-    return photosInterface == null ? makePhotosInterface(authData) : photosInterface;
+      UUID jobId, TokensAndUrlAuthData authData) {
+
+    if (photosInterface != null) {
+      return photosInterface;
+    }
+
+    if (photosInterfacesMap.containsKey(jobId)) {
+      return photosInterfacesMap.get(jobId);
+    }
+
+    GooglePhotosInterface newInterface = makePhotosInterface(authData);
+    photosInterfacesMap.put(jobId, newInterface);
+
+    return newInterface;
   }
 
   private synchronized GooglePhotosInterface makePhotosInterface(TokensAndUrlAuthData authData) {
